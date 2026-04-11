@@ -1,68 +1,80 @@
 const express = require('express');
 const auth = require('../middleware/auth');
-const Folder = require('../models/Folder');
-const File = require('../models/File');
+const {
+	mapFolder,
+	createFolder,
+	listFolderContents,
+	deleteFolderTree,
+} = require('../services/metadataService');
+const { removeFileFromDisk } = require('../services/fileHandler');
+const { subtractUsage } = require('../services/quotaManager');
 
 const router = express.Router();
 
 router.use(auth);
 
 router.post('/', async (req, res) => {
-    const { name, parentId } = req.body;
+	const { name, parentId } = req.body;
+
+	if (!name || !name.trim()) {
+		return res.status(400).json({ success: false, error: 'Folder name is required' });
+	}
+
     try {
-        const folder = await Folder.create({
-            name,
-            owner: req.user.id,
-            parentId: parentId || null
-        });
-        res.json({
-            success: true,
-            data: {
-                id: folder._id,
-                name: folder.name,
-                parentId: folder.parentId
-            }
-        });
+        const folder = await createFolder(req.user.id, name.trim(), parentId || null);
+		return res.json({
+			success: true,
+			data: mapFolder(folder),
+		});
     } catch (error) {
-        res.status(500).json({ success: false, error: 'Failed to create folder' });
+		return res.status(500).json({ success: false, error: 'Failed to create folder' });
     }
 });
 
 router.get('/:folderId', async (req, res) => {
-    const { folderId } = req.params;
-    let queryParentId;
-    if (folderId === 'root') {
-        queryParentId = null;
-    } else {
-        queryParentId = folderId;
-    }
     try {
-        const folders = await Folder.find({ parentId: queryParentId, owner: req.user.id });
-        const files = await File.find({ folderId: queryParentId, owner: req.user.id });
-        const folderData = folders.map(f => ({
-            id: f._id,
-            name: f.name,
-            parentId: f.parentId
-        }));
-        const fileData = files.map(f => ({
-            id: f._id,
-            originalName: f.originalName,
-            mimeType: f.mimeType,
-            size: f.size,
-            folderId: f.folderId,
-            shareToken: f.shareToken,
-            createdAt: f.createdAt
-        }));
-        res.json({
-            success: true,
-            data: {
-                folders: folderData,
-                files: fileData
-            }
-        });
+		const { folderId } = req.params;
+		const data = await listFolderContents(req.user.id, folderId);
+
+		return res.json({
+			success: true,
+			data,
+		});
     } catch (error) {
-        res.status(500).json({ success: false, error: 'Failed to fetch folders and files' });
+		return res.status(500).json({ success: false, error: 'Failed to fetch folders and files' });
     }
+});
+
+router.delete('/:folderId', async (req, res) => {
+	try {
+		const { folderId } = req.params;
+
+		if (folderId === 'root') {
+			return res.status(400).json({ success: false, error: 'Cannot delete root folder' });
+		}
+
+		const deletion = await deleteFolderTree(req.user.id, folderId);
+		if (!deletion) {
+			return res.status(404).json({ success: false, error: 'Folder not found' });
+		}
+
+		for (const filePath of deletion.deletedFilePaths) {
+			await removeFileFromDisk(filePath);
+		}
+
+		await subtractUsage(req.user.id, deletion.deletedBytes);
+
+		return res.json({
+			success: true,
+			data: {
+				message: 'Folder deleted',
+				deletedFolders: deletion.deletedFoldersCount,
+				deletedFiles: deletion.deletedFilesCount,
+			},
+		});
+	} catch (error) {
+		return res.status(500).json({ success: false, error: 'Failed to delete folder' });
+	}
 });
 
 module.exports = router;

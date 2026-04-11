@@ -1,35 +1,34 @@
 
-
 const express = require('express');
-const path = require('path');
-const fs = require('fs');
-const crypto = require('crypto');
 const multer = require('multer');
-const File = require('../models/File.js');
-const quotaMiddleware = require('../middleware/quota');
 const authMiddleware = require('../middleware/auth');
+const {
+    uploadSingleFile,
+    buildStoredPath,
+    removeFileFromDisk,
+    sendDownload,
+} = require('../services/fileHandler');
+const {
+    mapFile,
+    createFileRecord,
+    getOwnedFile,
+    deleteOwnedFile,
+    moveOwnedFile,
+} = require('../services/metadataService');
+const {
+    ensureFileWithinLimit,
+    ensureUserHasQuota,
+    addUsage,
+    subtractUsage,
+} = require('../services/quotaManager');
 
 const router = express.Router();
 router.use(authMiddleware);
 
-// Configure Multer storage
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, path.join(__dirname, '../uploads'));
-    },
-    filename: (req, file, cb) => {
-        const filename = crypto.randomUUID() + '-' + file.originalname;
-        cb(null, filename);
-    }
-});
-
-const upload = multer({ storage });
-
 // POST /api/upload
 router.post(
     '/upload',
-    quotaMiddleware,
-    upload.single('file'),
+    uploadSingleFile,
     async (req, res) => {
         try {
             const body = req.body || {};
@@ -44,30 +43,30 @@ router.post(
                 return res.json({ success: false, error: 'userId is required' });
             }
 
-            const saved = await File.create({
+            ensureFileWithinLimit(req.file.size);
+            await ensureUserHasQuota(userId, req.file.size);
+
+            const saved = await createFileRecord({
                 originalName: req.file.originalname,
                 storedName: req.file.filename,
                 mimeType: req.file.mimetype,
                 size: req.file.size,
-                path: path.join(__dirname, '../uploads', req.file.filename),
+                path: buildStoredPath(req.file.filename),
                 owner: userId,
                 folderId: folderId || null,
                 shareToken: null,
             });
 
+            await addUsage(userId, req.file.size);
+
             return res.json({
                 success: true,
-                data: {
-                    id: saved._id,
-                    originalName: saved.originalName,
-                    mimeType: saved.mimeType,
-                    size: saved.size,
-                    folderId: saved.folderId,
-                    shareToken: null,
-                    createdAt: saved.createdAt,
-                },
+                data: mapFile(saved),
             });
         } catch (err) {
+            if (req.file?.path) {
+                await removeFileFromDisk(req.file.path);
+            }
             return res.json({ success: false, error: err.message });
         }
     }
@@ -77,18 +76,14 @@ router.post(
 router.get('/download/:fileId', async (req, res) => {
     try {
         const fileId = req.params.fileId;
-        const file = await File.findById(fileId);
+        const ownerId = req.session?.userId || req.user?.id;
+        const file = await getOwnedFile(ownerId, fileId);
 
         if (!file) {
             return res.json({ success: false, error: 'File not found' });
         }
 
-        // AUTH OWNERSHIP CHECK GOES HERE after M3 middleware is added
-        return res.download(file.path, file.originalName, (err) => {
-            if (err) {
-                return res.json({ success: false, error: 'File could not be downloaded' });
-            }
-        });
+        return sendDownload(res, file);
     } catch (err) {
         return res.json({ success: false, error: err.message });
     }
@@ -98,21 +93,16 @@ router.get('/download/:fileId', async (req, res) => {
 router.delete('/files/:fileId', async (req, res) => {
     try {
         const fileId = req.params.fileId;
-        const file = await File.findById(fileId);
+        const ownerId = req.session?.userId || req.user?.id;
+        const file = await getOwnedFile(ownerId, fileId);
 
         if (!file) {
             return res.json({ success: false, error: 'File not found' });
         }
 
-        // Try to delete from disk, but continue even if it fails
-        try {
-            fs.unlinkSync(file.path);
-        } catch (diskErr) {
-            // File doesn't exist on disk, but we'll delete the DB record anyway
-        }
-
-        await File.deleteOne({ _id: fileId });
-        // M2 handles quota recalculation after this line
+        await deleteOwnedFile(ownerId, fileId);
+        await removeFileFromDisk(file.path);
+        await subtractUsage(ownerId, file.size);
 
         return res.json({ success: true, data: { message: 'File deleted' } });
     } catch (err) {
@@ -130,17 +120,15 @@ router.patch('/files/:fileId/move', async (req, res) => {
             return res.json({ success: false, error: 'targetFolderId is required' });
         }
 
-        const file = await File.findById(fileId);
+        const ownerId = req.session?.userId || req.user?.id;
+        const normalizedFolderId = targetFolderId === 'root' ? null : targetFolderId;
+        const updatedFile = await moveOwnedFile(ownerId, fileId, normalizedFolderId);
 
-        if (!file) {
+        if (!updatedFile) {
             return res.json({ success: false, error: 'File not found' });
         }
 
-        file.folderId = targetFolderId;
-        const updatedFile = await file.save();
-        // File stays on disk, only DB record changes
-
-        return res.json({ success: true, data: updatedFile });
+        return res.json({ success: true, data: mapFile(updatedFile) });
     } catch (err) {
         return res.json({ success: false, error: err.message });
     }
@@ -149,6 +137,9 @@ router.patch('/files/:fileId/move', async (req, res) => {
 // Error handling middleware for Multer errors
 router.use((err, req, res, next) => {
     if (err instanceof multer.MulterError) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+            return res.status(413).json({ success: false, error: 'File exceeds 50 MB limit.' });
+        }
         return res.json({ success: false, error: err.message });
     }
     if (err) {

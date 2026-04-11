@@ -9,6 +9,7 @@ const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
 const session = require('express-session');
+const path = require('path');
 const User = require('./models/User');
 
 require('dotenv').config();
@@ -28,10 +29,18 @@ app.use(session({
     saveUninitialized: false,
 }));
 
+app.get('/share/:token', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'share.html'));
+});
+
+app.use(express.static(path.join(__dirname, 'public')));
+
 // Routes
 const fileRoutes = require('./routes/files');
 const foldersRoutes = require('./routes/folders');
 const shareRoutes = require('./routes/share');
+const quotaRoutes = require('./routes/quota');
+const searchRoutes = require('./routes/search');
 
 const users = [
     { username: 'alice', password: 'pass1' },
@@ -65,9 +74,17 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
+app.post('/api/logout', (req, res) => {
+    req.session.destroy(() => {
+        res.json({ success: true, data: { message: 'Logged out' } });
+    });
+});
+
+app.use('/api', shareRoutes);
 app.use('/api', fileRoutes);
 app.use('/api/folders', foldersRoutes);
-app.use('/api', shareRoutes);
+app.use('/api', quotaRoutes);
+app.use('/api', searchRoutes);
 
 // Connect to MongoDB
 mongoose.connect(MONGO_URI)

@@ -10,8 +10,8 @@ async function seed() {
 	await User.deleteMany({ username: { $in: ['alice', 'bob'] } });
 
 	await User.insertMany([
-		{ username: 'alice', password: 'pass1', quotaLimit: 52428800 },
-		{ username: 'bob', password: 'pass2', quotaLimit: 52428800 },
+		{ username: 'alice', password: 'pass1', quotaLimit: 524288000 },
+		{ username: 'bob', password: 'pass2', quotaLimit: 524288000 },
 	]);
 
 	console.log('Seeded alice and bob');

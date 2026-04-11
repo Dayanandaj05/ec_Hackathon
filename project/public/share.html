@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kazhanjiyam Share</title>
+  <style>
+    :root {
+      --blue: #1f5eff;
+      --blue-dk: #1548cc;
+      --bg: #eef2f7;
+      --surface: #ffffff;
+      --text: #1d2433;
+      --muted: #5f6b82;
+      --border: #d8dfeb;
+      --ok: #0f9d58;
+      --warn: #d93025;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background: radial-gradient(circle at 0 0, #dfe9ff 0, transparent 45%),
+                  radial-gradient(circle at 100% 100%, #dff7e8 0, transparent 40%),
+                  var(--bg);
+      color: var(--text);
+      display: grid;
+      place-items: center;
+      padding: 20px;
+    }
+
+    .card {
+      width: min(560px, 100%);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      box-shadow: 0 20px 50px rgba(28, 53, 98, 0.12);
+      padding: 26px;
+    }
+
+    .brand {
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      font-size: 22px;
+      margin-bottom: 8px;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      margin: 0 0 18px;
+      font-size: 14px;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 8px;
+      margin-bottom: 8px;
+      font-size: 14px;
+    }
+
+    .key {
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    .value {
+      word-break: break-word;
+    }
+
+    .actions {
+      margin-top: 20px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    button,
+    a.button {
+      border: 0;
+      border-radius: 10px;
+      padding: 11px 16px;
+      font-size: 14px;
+      text-decoration: none;
+      cursor: pointer;
+      min-height: 42px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .primary {
+      background: var(--blue);
+      color: white;
+    }
+
+    .primary:hover { background: var(--blue-dk); }
+
+    .secondary {
+      background: #f4f7fc;
+      color: #234;
+      border: 1px solid var(--border);
+    }
+
+    .status {
+      margin-top: 12px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .status.ok { color: var(--ok); }
+    .status.err { color: var(--warn); }
+
+    @media (max-width: 640px) {
+      .card { padding: 18px; }
+      .row { grid-template-columns: 1fr; gap: 2px; }
+      .key { font-size: 12px; }
+      .value { font-size: 14px; }
+      .actions a.button,
+      .actions button { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <section class="card">
+    <div class="brand">Kazhanjiyam</div>
+    <p class="subtitle">Shared file access</p>
+
+    <div class="row"><div class="key">File Name</div><div class="value" id="name">Loading...</div></div>
+    <div class="row"><div class="key">Type</div><div class="value" id="type">-</div></div>
+    <div class="row"><div class="key">Size</div><div class="value" id="size">-</div></div>
+    <div class="row"><div class="key">Owner</div><div class="value" id="owner">-</div></div>
+
+    <div class="actions">
+      <a id="downloadBtn" class="button primary" href="#">Download</a>
+      <a class="button secondary" href="/">Open Kazhanjiyam</a>
+    </div>
+
+    <div class="status" id="status">Checking shared file...</div>
+  </section>
+
+  <script>
+    const token = window.location.pathname.split('/').filter(Boolean).pop();
+    const statusEl = document.getElementById('status');
+    const set = (id, value) => { document.getElementById(id).textContent = value; };
+
+    function formatBytes(bytes) {
+      if (!Number.isFinite(bytes)) return '-';
+      const units = ['B', 'KB', 'MB', 'GB'];
+      let v = bytes;
+      let i = 0;
+      while (v >= 1024 && i < units.length - 1) {
+        v /= 1024;
+        i += 1;
+      }
+      return `${v.toFixed(v >= 100 || i === 0 ? 0 : 1)} ${units[i]}`;
+    }
+
+    async function loadSharedFile() {
+      try {
+        const res = await fetch(`/api/share/${token}`);
+        const json = await res.json();
+        if (!json.success) {
+          throw new Error(json.error || 'Unable to access shared file');
+        }
+
+        const file = json.data;
+        set('name', file.originalName || '-');
+        set('type', file.mimeType || '-');
+        set('size', formatBytes(file.size));
+        set('owner', file.owner || '-');
+
+        const btn = document.getElementById('downloadBtn');
+        btn.href = file.downloadUrl || `/api/share/${token}/download`;
+
+        statusEl.textContent = 'File is accessible. You can download it now.';
+        statusEl.classList.add('ok');
+      } catch (err) {
+        set('name', 'Unavailable');
+        set('type', '-');
+        set('size', '-');
+        set('owner', '-');
+        statusEl.textContent = err.message;
+        statusEl.classList.add('err');
+      }
+    }
+
+    loadSharedFile();
+  </script>
+</body>
+</html>

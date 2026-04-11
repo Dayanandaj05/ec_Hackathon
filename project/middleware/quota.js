@@ -1,29 +1,34 @@
-const User = require('../models/User');
+const {
+  MAX_FILE_SIZE,
+  ensureUserHasQuota,
+} = require('../services/quotaManager');
 
 async function checkQuota(req, res, next) {
   try {
-    const userId = req.session?.userId || (req.body && req.body.userId);
+    const userId = req.session?.userId || req.user?.id || (req.body && req.body.userId);
     if (!userId) {
       return res.status(400).json({ success: false, error: 'userId is required' });
     }
 
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ success: false, error: 'User not found' });
-    }
+    const incomingSize = parseInt(req.headers['content-length'], 10) || 0;
 
-    const incomingSize = parseInt(req.headers['content-length']) || 0;
-
-    if (user.quotaUsed + incomingSize > user.quotaLimit) {
+    if (incomingSize > MAX_FILE_SIZE) {
       return res.status(413).json({
         success: false,
-        error: `Quota exceeded. Used: ${user.quotaUsed} bytes of ${user.quotaLimit} bytes.`
+        error: 'File exceeds 50 MB limit.'
       });
     }
 
+    await ensureUserHasQuota(userId, incomingSize);
+
     next();
   } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
+    const status = err.message === 'User not found'
+      ? 404
+      : err.message.includes('Quota exceeded') || err.message.includes('File exceeds')
+        ? 413
+        : 500;
+    return res.status(status).json({ success: false, error: err.message });
   }
 }
 

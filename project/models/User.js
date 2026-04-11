@@ -4,7 +4,7 @@ const userSchema = new mongoose.Schema({
 	username: { type: String, required: true, unique: true },
 	password: { type: String, required: true },
 	quotaUsed: { type: Number, default: 0 },
-	quotaLimit: { type: Number, default: 52428800 },
+	quotaLimit: { type: Number, default: 524288000 },
 });
 
 module.exports = mongoose.model('User', userSchema);

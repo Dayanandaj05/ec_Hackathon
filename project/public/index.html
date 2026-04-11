@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kazhanjiyam</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- LOGIN SCREEN -->
+  <div id="login-screen">
+    <div class="login-card">
+      <div class="login-logo">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none">
+          <path d="M12 2L2 7l10 5 10-5-10-5z" fill="#4285f4"/>
+          <path d="M2 17l10 5 10-5" stroke="#34a853" stroke-width="2" fill="none"/>
+          <path d="M2 12l10 5 10-5" stroke="#fbbc04" stroke-width="2" fill="none"/>
+        </svg>
+        <span>Kazhanjiyam</span>
+      </div>
+      <h2>Sign in</h2>
+      <p class="login-sub">to continue to Kazhanjiyam</p>
+      <form id="login-form">
+        <div class="field-group">
+          <input type="text" id="login-username" placeholder="Username" autocomplete="username" required />
+        </div>
+        <div class="field-group">
+          <input type="password" id="login-password" placeholder="Password" autocomplete="current-password" required />
+        </div>
+        <div id="login-error" class="error-msg hidden"></div>
+        <button type="submit" class="btn-primary btn-full">Sign In</button>
+      </form>
+      <p class="login-hint">Test: alice / pass1 &nbsp;·&nbsp; bob / pass2</p>
+    </div>
+  </div>
+
+  <!-- MAIN APP -->
+  <div id="app" class="hidden">
+
+    <!-- SIDEBAR -->
+    <aside id="sidebar">
+      <div class="sidebar-logo">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+          <path d="M12 2L2 7l10 5 10-5-10-5z" fill="#4285f4"/>
+          <path d="M2 17l10 5 10-5" stroke="#34a853" stroke-width="2" fill="none"/>
+          <path d="M2 12l10 5 10-5" stroke="#fbbc04" stroke-width="2" fill="none"/>
+        </svg>
+        <span>Kazhanjiyam</span>
+      </div>
+
+      <nav class="sidebar-nav">
+        <button class="nav-item active" id="nav-my-drive" onclick="navigateToRoot()">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z" fill="currentColor"/></svg>
+          My Drive
+        </button>
+      </nav>
+
+      <div class="sidebar-folders">
+        <p class="sidebar-section-label">Folders</p>
+        <ul id="sidebar-folder-list"></ul>
+      </div>
+
+      <div class="sidebar-user">
+        <div class="user-avatar" id="user-avatar">A</div>
+        <div class="user-info">
+          <span id="user-display-name">alice</span>
+          <button class="btn-logout" onclick="logout()">Sign out</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- MAIN CONTENT -->
+    <main id="main">
+
+      <!-- TOP BAR -->
+      <div class="topbar">
+        <div class="search-wrap">
+          <svg viewBox="0 0 24 24" width="18" height="18" class="search-icon"><path d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+          <input type="text" id="search-input" placeholder="Search in Drive" />
+          <button id="search-clear" class="search-clear hidden" onclick="clearSearch()">✕</button>
+        </div>
+      </div>
+
+      <!-- BREADCRUMB -->
+      <div class="breadcrumb-bar">
+        <div id="breadcrumb"></div>
+      </div>
+
+      <!-- QUOTA BAR -->
+      <div class="quota-section">
+        <div class="quota-bar-wrap">
+          <div class="quota-bar-track">
+            <div id="quota-bar-fill" class="quota-bar-fill"></div>
+          </div>
+          <span id="quota-text" class="quota-text">Loading…</span>
+        </div>
+      </div>
+
+      <!-- TOOLBAR -->
+      <div class="toolbar">
+        <label class="btn-primary upload-label" id="upload-btn-label">
+          <svg viewBox="0 0 24 24" width="16" height="16"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Upload
+          <input type="file" id="file-input" multiple style="display:none" onchange="handleUpload(event)" />
+        </label>
+        <button class="btn-secondary" onclick="createFolder()">
+          <svg viewBox="0 0 24 24" width="16" height="16"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+          New Folder
+        </button>
+        <div id="search-mode-badge" class="hidden search-badge">
+          Search results
+          <button onclick="clearSearch()">✕</button>
+        </div>
+      </div>
+
+      <!-- DROP ZONE OVERLAY -->
+      <div id="drop-overlay" class="drop-overlay hidden">
+        <div class="drop-message">
+          <svg viewBox="0 0 24 24" width="48" height="48"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" stroke="white" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <p>Drop files to upload</p>
+        </div>
+      </div>
+
+      <!-- FILE GRID -->
+      <div id="file-grid" class="file-grid"></div>
+
+      <!-- UPLOAD PROGRESS -->
+      <div id="upload-toast" class="upload-toast hidden">
+        <div class="toast-inner">
+          <span id="upload-toast-text">Uploading…</span>
+          <div class="toast-progress-track"><div id="toast-progress-bar" class="toast-progress-bar"></div></div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- PREVIEW MODAL -->
+  <div id="modal-overlay" class="modal-overlay hidden" onclick="closeModal(event)">
+    <div class="modal-box" id="modal-box">
+      <div class="modal-header">
+        <span id="modal-title"></span>
+        <button class="modal-close" onclick="closeModalDirect()">✕</button>
+      </div>
+      <div id="modal-body" class="modal-body"></div>
+      <div class="modal-footer">
+        <button class="btn-primary" id="modal-download-btn">Download</button>
+        <button class="btn-secondary" id="modal-share-btn">Share</button>
+        <button class="btn-danger" id="modal-delete-btn">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- SHARE MODAL -->
+  <div id="share-modal" class="modal-overlay hidden" onclick="closeShareModal(event)">
+    <div class="modal-box share-modal-box">
+      <div class="modal-header">
+        <span>Share File</span>
+        <button class="modal-close" onclick="closeShareModalDirect()">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="share-label">Anyone with this link can download the file:</p>
+        <div class="share-url-row">
+          <input type="text" id="share-url-input" readonly />
+          <button class="btn-primary" onclick="copyShareUrl()">Copy</button>
+        </div>
+        <p id="copy-confirm" class="copy-confirm hidden">✓ Copied!</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- MOVE MODAL -->
+  <div id="move-modal" class="modal-overlay hidden" onclick="closeMoveModal(event)">
+    <div class="modal-box share-modal-box">
+      <div class="modal-header">
+        <span>Move File</span>
+        <button class="modal-close" onclick="closeMoveModalDirect()">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="share-label">Select destination folder:</p>
+        <select id="move-folder-select" class="move-select"></select>
+        <div style="margin-top:16px; display:flex; gap:8px;">
+          <button class="btn-primary" onclick="confirmMove()">Move</button>
+          <button class="btn-secondary" onclick="closeMoveModalDirect()">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
