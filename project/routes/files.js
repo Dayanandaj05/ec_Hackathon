@@ -6,8 +6,11 @@ const fs = require('fs');
 const crypto = require('crypto');
 const multer = require('multer');
 const File = require('../models/File.js');
+const quotaMiddleware = require('../middleware/quota');
+const authMiddleware = require('../middleware/auth');
 
 const router = express.Router();
+router.use(authMiddleware);
 
 // Configure Multer storage
 const storage = multer.diskStorage({
@@ -25,12 +28,13 @@ const upload = multer({ storage });
 // POST /api/upload
 router.post(
     '/upload',
-    // AUTH MIDDLEWARE GOES HERE
-    // QUOTA MIDDLEWARE GOES HERE
+    quotaMiddleware,
     upload.single('file'),
     async (req, res) => {
         try {
-            const { userId, folderId } = req.body;
+            const body = req.body || {};
+            const userId = body.userId || req.session?.userId || req.user?.id;
+            const folderId = body.folderId || null;
 
             if (!req.file) {
                 return res.json({ success: false, error: 'No file uploaded' });
