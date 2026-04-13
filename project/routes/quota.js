@@ -1,27 +1,17 @@
 const express = require('express');
+const User = require('../models/User');
 const auth = require('../middleware/auth');
-const { getQuota } = require('../services/quotaManager');
 
 const router = express.Router();
 
 router.get('/quota', auth, async (req, res) => {
-	try {
-		const userId = req.session?.userId || req.user?.id || req.query.userId;
-
-		if (!userId) {
-			return res.status(400).json({ success: false, error: 'userId is required' });
-		}
-
-		const quota = await getQuota(userId);
-
-		return res.json({
-			success: true,
-			data: quota,
-		});
-	} catch (err) {
-		const status = err.message === 'User not found' ? 404 : 500;
-		return res.status(status).json({ success: false, error: err.message });
-	}
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+        res.json({ success: true, data: { used: user.quotaUsed, limit: user.quotaLimit } });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
 });
 
 module.exports = router;

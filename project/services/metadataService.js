@@ -25,6 +25,17 @@ async function createFileRecord(payload) {
   return File.create(payload);
 }
 
+async function hasDuplicateFileName(ownerId, folderId, originalName) {
+  const normalizedFolderId = folderId || null;
+  const existing = await File.findOne({
+    owner: ownerId,
+    folderId: normalizedFolderId,
+    originalName,
+  }).select('_id');
+
+  return Boolean(existing);
+}
+
 async function getOwnedFile(ownerId, fileId) {
   return File.findOne({ _id: fileId, owner: ownerId });
 }
@@ -127,6 +138,7 @@ module.exports = {
   mapFile,
   mapFolder,
   createFileRecord,
+  hasDuplicateFileName,
   getOwnedFile,
   deleteOwnedFile,
   moveOwnedFile,

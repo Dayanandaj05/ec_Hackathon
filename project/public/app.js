@@ -1,582 +1,653 @@
-// ── CONFIG ──────────────────────────────────────────────────────────────────
-const MOCK_MODE = false;
-const BASE = (window.location && window.location.origin && window.location.origin.startsWith('http'))
-  ? window.location.origin
-  : 'http://localhost:3000';
-
-// ── STATE ────────────────────────────────────────────────────────────────────
+const API = '';
 let currentUser = null;
-let currentFolderId = 'root';
-let breadcrumbStack = [{ id: 'root', name: 'My Drive' }];
-let allFolders = [];
-let currentFiles = [];
-let moveTargetFileId = null;
-let searchDebounceTimer = null;
-let isSearchMode = false;
+let currentFolderId = null;
+let breadcrumbStack = [{ id: null, name: 'My Drive' }];
+let searchTimeout = null;
+let isAdminView = false;
+let selectedSizeUnit = localStorage.getItem('sizeUnit') || 'auto';
 
-// ── MOCK DATA ─────────────────────────────────────────────────────────────────
-const MOCK_USER = { userId: 'user1', username: 'alice' };
-const MOCK_QUOTA = { used: 20971520, limit: 52428800 };
-const MOCK_FILES = [
-  { id: 'f1', originalName: 'photo.jpg', mimeType: 'image/jpeg', size: 204800, folderId: null, shareToken: null, createdAt: '2025-01-01' },
-  { id: 'f2', originalName: 'notes.txt', mimeType: 'text/plain', size: 1024, folderId: null, shareToken: null, createdAt: '2025-01-02' }
-];
-const MOCK_FOLDERS = [{ id: 'folder1', name: 'Documents', parentId: null }];
-
-// ── HELPERS ───────────────────────────────────────────────────────────────────
-const $ = id => document.getElementById(id);
-const bytesToMB = b => (b / 1048576).toFixed(1);
-
-function apiFetch(url, options = {}) {
-  return fetch(url, { ...options, credentials: 'include' });
-}
-
-function fileIcon(mimeType) {
-  if (!mimeType) return '📄';
-  if (mimeType.startsWith('image/')) return '🖼️';
-  if (mimeType.startsWith('video/')) return '🎬';
-  if (mimeType.startsWith('audio/')) return '🎵';
-  if (mimeType === 'application/pdf') return '📕';
-  if (mimeType.includes('zip') || mimeType.includes('compressed')) return '🗜️';
-  if (mimeType.startsWith('text/')) return '📝';
-  if (mimeType.includes('spreadsheet') || mimeType.includes('excel')) return '📊';
-  if (mimeType.includes('presentation') || mimeType.includes('powerpoint')) return '📊';
-  if (mimeType.includes('word') || mimeType.includes('document')) return '📄';
-  return '📄';
-}
-
-function showToast(text, progress = 0) {
-  $('upload-toast').classList.remove('hidden');
-  $('upload-toast-text').textContent = text;
-  $('toast-progress-bar').style.width = progress + '%';
-}
-
-function hideToast() {
-  setTimeout(() => $('upload-toast').classList.add('hidden'), 800);
-}
-
-// ── AUTH ──────────────────────────────────────────────────────────────────────
-$('login-form').addEventListener('submit', async e => {
-  e.preventDefault();
-  const username = $('login-username').value.trim();
-  const password = $('login-password').value;
-  const errEl = $('login-error');
-  errEl.classList.add('hidden');
-
-  if (MOCK_MODE) {
-    currentUser = MOCK_USER;
-    onLoginSuccess();
-    return;
-  }
-
+async function login() {
+  const username = document.getElementById('username').value.trim();
+  const password = document.getElementById('password').value.trim();
+  const err = document.getElementById('login-error');
+  err.textContent = '';
   try {
-    const res = await apiFetch(`${BASE}/api/login`, {
-      method: 'POST',
+    const res = await fetch(`${API}/api/login`, {
+      method: 'POST', credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password })
     });
-    const json = await res.json();
-    if (!json.success) throw new Error(json.error || 'Login failed');
-    currentUser = json.data;
-    onLoginSuccess();
-  } catch (err) {
-    errEl.textContent = err.message;
-    errEl.classList.remove('hidden');
-  }
-});
-
-function onLoginSuccess() {
-  $('login-screen').classList.add('hidden');
-  $('app').classList.remove('hidden');
-  $('user-display-name').textContent = currentUser.username;
-  $('user-avatar').textContent = currentUser.username[0].toUpperCase();
-  loadFolder('root');
-  loadQuota();
-  loadSidebarFolders();
+    const data = await res.json();
+    if (!data.success) { err.textContent = data.error; return; }
+    currentUser = data.data;
+    document.getElementById('login-screen').classList.add('hidden');
+    document.getElementById('app').classList.remove('hidden');
+    const roleLabel = currentUser.role ? ` (${currentUser.role})` : '';
+    document.getElementById('user-info').textContent = `Signed in as ${currentUser.username}${roleLabel}`;
+    document.getElementById('admin-nav').classList.toggle('hidden', currentUser.role !== 'admin');
+    loadFolder(null);
+    loadQuota();
+    loadSidebarFolders();
+  } catch (e) { err.textContent = 'Connection error'; }
 }
 
 async function logout() {
-  if (!MOCK_MODE) {
-    await apiFetch(`${BASE}/api/logout`, { method: 'POST' }).catch(() => {});
-  }
-  currentUser = null;
-  currentFolderId = 'root';
-  breadcrumbStack = [{ id: 'root', name: 'My Drive' }];
-  $('app').classList.add('hidden');
-  $('login-screen').classList.remove('hidden');
-  $('login-username').value = '';
-  $('login-password').value = '';
+  await fetch(`${API}/api/logout`, { method: 'POST', credentials: 'include' });
+  location.reload();
 }
 
-// ── QUOTA ─────────────────────────────────────────────────────────────────────
 async function loadQuota() {
-  let quota;
-  if (MOCK_MODE) {
-    quota = MOCK_QUOTA;
-  } else {
-    try {
-      const res = await apiFetch(`${BASE}/api/quota?userId=${currentUser.userId}`);
-      const json = await res.json();
-      if (!json.success) return;
-      quota = json.data;
-    } catch { return; }
-  }
-  const pct = Math.min((quota.used / quota.limit) * 100, 100);
-  const fill = $('quota-bar-fill');
-  fill.style.width = pct + '%';
-  fill.classList.toggle('danger', pct > 80);
-  $('quota-text').textContent = `${bytesToMB(quota.used)} MB of ${bytesToMB(quota.limit)} MB used`;
+  try {
+    const res = await fetch(`${API}/api/quota`, { credentials: 'include' });
+    const data = await res.json();
+    if (!data.success) return;
+    const { used, limit } = data.data;
+    const pct = Math.min((used / limit) * 100, 100).toFixed(1);
+    document.getElementById('quota-label').textContent = `${formatSize(used)} used of ${formatSize(limit)}`;
+    const fill = document.getElementById('quota-fill');
+    fill.style.width = `${pct}%`;
+    fill.classList.toggle('danger', pct > 80);
+  } catch (e) {}
 }
 
-// ── FOLDER NAVIGATION ─────────────────────────────────────────────────────────
 async function loadFolder(folderId) {
-  isSearchMode = false;
-  $('search-mode-badge').classList.add('hidden');
   currentFolderId = folderId;
-
-  let folders, files;
-
-  if (MOCK_MODE) {
-    folders = MOCK_FOLDERS.filter(f => (folderId === 'root' ? f.parentId === null : f.parentId === folderId));
-    files = MOCK_FILES.filter(f => (folderId === 'root' ? f.folderId === null : f.folderId === folderId));
-  } else {
-    try {
-      const res = await apiFetch(`${BASE}/api/folders/${folderId}`);
-      const json = await res.json();
-      if (!json.success) return;
-      folders = json.data.folders;
-      files = json.data.files;
-    } catch { return; }
-  }
-
-  allFolders = folders;
-  currentFiles = files;
-  renderGrid(folders, files);
-  renderBreadcrumb();
+  const param = folderId || 'root';
+  try {
+    const res = await fetch(`${API}/api/folders/${param}`, { credentials: 'include' });
+    const data = await res.json();
+    if (!data.success) return;
+    renderGrid(data.data.folders, data.data.files);
+    updateBreadcrumb();
+  } catch (e) {}
 }
 
-function navigateToRoot() {
-  breadcrumbStack = [{ id: 'root', name: 'My Drive' }];
-  loadFolder('root');
-  document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
-  $('nav-my-drive').classList.add('active');
+function navigateTo(folderId, name) {
+  showDriveView();
+  const existing = breadcrumbStack.findIndex(b => b.id === folderId);
+  if (existing >= 0) breadcrumbStack = breadcrumbStack.slice(0, existing + 1);
+  else breadcrumbStack.push({ id: folderId, name });
+  loadFolder(folderId);
+  loadSidebarFolders();
 }
 
-function navigateToFolder(folder) {
-  if (!breadcrumbStack.find(b => b.id === folder.id)) {
-    breadcrumbStack.push({ id: folder.id, name: folder.name });
-  }
-  loadFolder(folder.id);
-}
-
-function navigateToCrumb(index) {
-  breadcrumbStack = breadcrumbStack.slice(0, index + 1);
-  loadFolder(breadcrumbStack[index].id);
-}
-
-function renderBreadcrumb() {
-  const bc = $('breadcrumb');
-  bc.innerHTML = '';
-  breadcrumbStack.forEach((crumb, i) => {
-    if (i > 0) {
-      const sep = document.createElement('span');
-      sep.className = 'crumb-sep';
-      sep.textContent = '›';
-      bc.appendChild(sep);
-    }
-    const el = document.createElement('span');
-    el.className = 'crumb' + (i === breadcrumbStack.length - 1 ? ' active' : '');
-    el.textContent = crumb.name;
-    if (i < breadcrumbStack.length - 1) el.onclick = () => navigateToCrumb(i);
-    bc.appendChild(el);
-  });
+function updateBreadcrumb() {
+  document.getElementById('breadcrumb').innerHTML = breadcrumbStack.map((b, i) => {
+    if (i === breadcrumbStack.length - 1) return `<span>${b.name}</span>`;
+    return `<span style="cursor:pointer;color:#1e3a5f;text-decoration:underline" onclick="navigateTo('${b.id}','${b.name}')">${b.name}</span> / `;
+  }).join('');
 }
 
 async function loadSidebarFolders() {
-  let folders;
-  if (MOCK_MODE) {
-    folders = MOCK_FOLDERS;
-  } else {
-    try {
-      const res = await apiFetch(`${BASE}/api/folders/root`);
-      const json = await res.json();
-      if (!json.success) return;
-      folders = json.data.folders;
-    } catch { return; }
-  }
-  const ul = $('sidebar-folder-list');
-  ul.innerHTML = folders.map(f => `
-    <li onclick="navigateToFolder({id:'${f.id}',name:'${f.name}'})">
-      <svg viewBox="0 0 24 24" width="16" height="16"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z" fill="currentColor"/></svg>
-      ${f.name}
-    </li>`).join('');
-}
-
-// ── RENDER GRID ───────────────────────────────────────────────────────────────
-function renderGrid(folders, files) {
-  const grid = $('file-grid');
-  grid.innerHTML = '';
-
-  if (!folders.length && !files.length) {
-    grid.innerHTML = `<div class="empty-state">
-      <svg viewBox="0 0 24 24" width="64" height="64"><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
-      <p>This folder is empty</p>
-    </div>`;
-    return;
-  }
-
-  if (folders.length) {
-    const label = document.createElement('div');
-    label.className = 'grid-section-label';
-    label.textContent = 'Folders';
-    grid.appendChild(label);
-    folders.forEach(f => grid.appendChild(makeFolderCard(f)));
-  }
-
-  if (files.length) {
-    const label = document.createElement('div');
-    label.className = 'grid-section-label';
-    label.textContent = 'Files';
-    grid.appendChild(label);
-    files.forEach(f => grid.appendChild(makeFileCard(f)));
-  }
-}
-
-function makeFolderCard(folder) {
-  const card = document.createElement('div');
-  card.className = 'card folder-card';
-  card.innerHTML = `
-    <div class="card-thumb">
-      <span class="file-icon">📁</span>
-    </div>
-    <div class="card-info">
-      <div class="card-name" title="${folder.name}">${folder.name}</div>
-      <div class="card-meta">Folder</div>
-    </div>
-    <div class="card-actions">
-      <button class="card-btn" title="Open" onclick="navigateToFolder({id:'${folder.id}',name:'${folder.name}'})">📂 Open</button>
-      <button class="card-btn danger" title="Delete" onclick="deleteFolder('${folder.id}',event)">🗑 Delete</button>
-    </div>`;
-  card.addEventListener('click', () => navigateToFolder(folder));
-  return card;
-}
-
-function makeFileCard(file) {
-  const card = document.createElement('div');
-  card.className = 'card';
-  const isImage = file.mimeType && file.mimeType.startsWith('image/');
-  const thumb = isImage
-    ? `<img src="${BASE}/api/download/${file.id}" alt="${file.originalName}" loading="lazy" />`
-    : `<span class="file-icon">${fileIcon(file.mimeType)}</span>`;
-
-  card.innerHTML = `
-    <div class="card-thumb">${thumb}</div>
-    <div class="card-info">
-      <div class="card-name" title="${file.originalName}">${file.originalName}</div>
-      <div class="card-meta">${bytesToMB(file.size)} MB</div>
-    </div>
-    <div class="card-actions">
-      <button class="card-btn" title="Download" onclick="downloadFile('${file.id}',event)">⬇ DL</button>
-      <button class="card-btn" title="Preview" onclick="openPreviewAction('${file.id}',event)">👁 Preview</button>
-      <button class="card-btn" title="Share" onclick="shareFile('${file.id}',event)">🔗</button>
-      <button class="card-btn" title="Move" onclick="openMoveModal('${file.id}',event)">📂</button>
-      <button class="card-btn danger" title="Delete" onclick="deleteFile('${file.id}',event)">🗑</button>
-    </div>`;
-  card.addEventListener('click', () => downloadFile(file.id));
-  return card;
-}
-
-// ── UPLOAD ────────────────────────────────────────────────────────────────────
-async function handleUpload(event) {
-  const files = Array.from(event.target.files);
-  if (!files.length) return;
-  for (const file of files) await uploadFile(file);
-  event.target.value = '';
-}
-
-async function uploadFile(file) {
-  showToast(`Uploading ${file.name}…`, 30);
-
-  if (MOCK_MODE) {
-    await new Promise(r => setTimeout(r, 600));
-    MOCK_FILES.push({
-      id: 'f' + Date.now(), originalName: file.name,
-      mimeType: file.type, size: file.size,
-      folderId: currentFolderId === 'root' ? null : currentFolderId,
-      shareToken: null, createdAt: new Date().toISOString().split('T')[0]
-    });
-    showToast(`Uploaded ${file.name}`, 100);
-    hideToast();
-    loadFolder(currentFolderId);
-    return;
-  }
-
-  const fd = new FormData();
-  fd.append('file', file);
-  fd.append('userId', currentUser.userId);
-  if (currentFolderId !== 'root') fd.append('folderId', currentFolderId);
-
   try {
-    showToast(`Uploading ${file.name}…`, 60);
-    const res = await apiFetch(`${BASE}/api/upload`, { method: 'POST', body: fd });
-    const json = await res.json();
-    if (!json.success) throw new Error(json.error || 'Upload failed');
-    showToast(`Uploaded ${file.name}`, 100);
-    hideToast();
-    loadFolder(currentFolderId);
-    loadQuota();
-  } catch (err) {
-    showToast(`Error: ${err.message}`, 0);
-    setTimeout(() => $('upload-toast').classList.add('hidden'), 3000);
-  }
+    const res = await fetch(`${API}/api/folders/root`, { credentials: 'include' });
+    const data = await res.json();
+    if (!data.success) return;
+    document.getElementById('sidebar-folders').innerHTML = data.data.folders.map(f =>
+      `<div class="sidebar-folder" onclick="navigateTo('${f.id}','${f.name}')">📁 ${f.name}</div>`
+    ).join('');
+  } catch (e) {}
 }
 
-// ── DRAG & DROP ───────────────────────────────────────────────────────────────
-const mainEl = $('main');
-mainEl.addEventListener('dragover', e => { e.preventDefault(); $('drop-overlay').classList.remove('hidden'); $('drop-overlay').classList.add('active'); });
-mainEl.addEventListener('dragleave', e => { if (!mainEl.contains(e.relatedTarget)) { $('drop-overlay').classList.add('hidden'); $('drop-overlay').classList.remove('active'); } });
-mainEl.addEventListener('drop', e => {
-  e.preventDefault();
-  $('drop-overlay').classList.add('hidden');
-  $('drop-overlay').classList.remove('active');
-  const files = Array.from(e.dataTransfer.files);
-  files.forEach(uploadFile);
-});
-
-// ── CREATE FOLDER ─────────────────────────────────────────────────────────────
 async function createFolder() {
   const name = prompt('Folder name:');
-  if (!name || !name.trim()) return;
-
-  if (MOCK_MODE) {
-    MOCK_FOLDERS.push({ id: 'folder' + Date.now(), name: name.trim(), parentId: currentFolderId === 'root' ? null : currentFolderId });
-    loadFolder(currentFolderId);
-    loadSidebarFolders();
-    return;
-  }
-
+  if (!name) return;
   try {
-    const res = await apiFetch(`${BASE}/api/folders`, {
-      method: 'POST',
+    const res = await fetch(`${API}/api/folders`, {
+      method: 'POST', credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: name.trim(), parentId: currentFolderId === 'root' ? null : currentFolderId })
+      body: JSON.stringify({ name, parentId: currentFolderId })
     });
-    const json = await res.json();
-    if (!json.success) throw new Error(json.error);
+    const data = await res.json();
+    if (!data.success) { alert(data.error); return; }
     loadFolder(currentFolderId);
     loadSidebarFolders();
-  } catch (err) { alert('Error: ' + err.message); }
+  } catch (e) {}
 }
 
-// ── DOWNLOAD ──────────────────────────────────────────────────────────────────
-function downloadFile(fileId, e) {
-  if (e) e.stopPropagation();
-  window.open(`${BASE}/api/download/${fileId}`, '_blank');
-}
+function triggerUpload() { document.getElementById('file-input').click(); }
 
-// ── DELETE ────────────────────────────────────────────────────────────────────
-async function deleteFile(fileId, e) {
-  if (e) e.stopPropagation();
-  if (!confirm('Delete this file?')) return;
-
-  if (MOCK_MODE) {
-    const idx = MOCK_FILES.findIndex(f => f.id === fileId);
-    if (idx !== -1) MOCK_FILES.splice(idx, 1);
-    loadFolder(currentFolderId);
-    return;
-  }
-
+async function uploadFile(file) {
+  if (!file) return;
+  const form = new FormData();
+  form.append('file', file);
+  if (currentFolderId) form.append('folderId', currentFolderId);
   try {
-    const res = await apiFetch(`${BASE}/api/files/${fileId}`, { method: 'DELETE' });
-    const json = await res.json();
-    if (!json.success) throw new Error(json.error);
-    closeModalDirect();
+    const res = await fetch(`${API}/api/upload`, { method: 'POST', credentials: 'include', body: form });
+    const data = await res.json();
+    if (!data.success) { alert('Upload failed: ' + data.error); return; }
     loadFolder(currentFolderId);
     loadQuota();
-  } catch (err) { alert('Error: ' + err.message); }
+  } catch (e) { alert('Upload error'); }
+  document.getElementById('file-input').value = '';
 }
 
-async function deleteFolder(folderId, e) {
-  if (e) e.stopPropagation();
-  if (!confirm('Delete this folder and all nested files/folders?')) return;
+function fileIcon(mime) {
+  if (!mime) return '📄';
+  if (mime.startsWith('image/')) return '🖼';
+  if (mime.startsWith('video/')) return '🎬';
+  if (mime.startsWith('audio/')) return '🎵';
+  if (mime.includes('pdf')) return '📕';
+  if (mime.startsWith('text/')) return '📝';
+  return '📄';
+}
 
-  if (MOCK_MODE) {
-    alert('Mock mode does not support folder deletion tree.');
-    return;
-  }
+function formatSize(bytes) {
+  const safe = Number.isFinite(Number(bytes)) ? Number(bytes) : 0;
+  const abs = Math.abs(safe);
+  const unit = selectedSizeUnit;
 
-  try {
-    const res = await apiFetch(`${BASE}/api/folders/${folderId}`, { method: 'DELETE' });
-    const json = await res.json();
-    if (!json.success) throw new Error(json.error || 'Folder delete failed');
-    await loadFolder(currentFolderId);
-    await loadSidebarFolders();
-    await loadQuota();
-  } catch (err) {
-    alert('Error: ' + err.message);
+  if (unit === 'bytes') return `${safe} B`;
+  if (unit === 'kb') return `${(safe / 1024).toFixed(2)} KB`;
+  if (unit === 'mb') return `${(safe / 1048576).toFixed(2)} MB`;
+  if (unit === 'gb') return `${(safe / 1073741824).toFixed(2)} GB`;
+  if (unit === 'tb') return `${(safe / 1099511627776).toFixed(2)} TB`;
+
+  if (abs < 1024) return `${safe} B`;
+  if (abs < 1048576) return `${(safe / 1024).toFixed(1)} KB`;
+  if (abs < 1073741824) return `${(safe / 1048576).toFixed(2)} MB`;
+  if (abs < 1099511627776) return `${(safe / 1073741824).toFixed(2)} GB`;
+  return `${(safe / 1099511627776).toFixed(2)} TB`;
+}
+
+function formatSizeMB(bytes) {
+  const safe = Number.isFinite(Number(bytes)) ? Number(bytes) : 0;
+  return `${(safe / 1048576).toFixed(2)} MB`;
+}
+
+function refreshCurrentView() {
+  if (!currentUser) return;
+  if (isAdminView) {
+    loadAdminDashboard();
+  } else {
+    loadFolder(currentFolderId);
+    loadQuota();
   }
 }
 
-// ── SHARE ─────────────────────────────────────────────────────────────────────
-async function shareFile(fileId, e) {
-  if (e) e.stopPropagation();
+function setupSizeUnitSelector() {
+  const select = document.getElementById('size-unit-select');
+  if (!select) return;
 
-  if (MOCK_MODE) {
-    $('share-url-input').value = `http://localhost:3000/share/mock-token-${fileId}`;
-    $('copy-confirm').classList.add('hidden');
-    $('share-modal').classList.remove('hidden');
-    return;
+  const allowed = ['auto', 'bytes', 'kb', 'mb', 'gb', 'tb'];
+  if (!allowed.includes(selectedSizeUnit)) {
+    selectedSizeUnit = 'auto';
   }
 
-  try {
-    const res = await apiFetch(`${BASE}/api/files/${fileId}/share`, { method: 'POST' });
-    const json = await res.json();
-    if (!json.success) throw new Error(json.error);
-    $('share-url-input').value = BASE + json.data.shareUrl;
-    $('copy-confirm').classList.add('hidden');
-    $('share-modal').classList.remove('hidden');
-  } catch (err) { alert('Error: ' + err.message); }
-}
-
-function copyShareUrl() {
-  const input = $('share-url-input');
-  input.select();
-  navigator.clipboard.writeText(input.value).then(() => {
-    $('copy-confirm').classList.remove('hidden');
-    setTimeout(() => $('copy-confirm').classList.add('hidden'), 2000);
+  select.value = selectedSizeUnit;
+  select.addEventListener('change', () => {
+    selectedSizeUnit = select.value;
+    localStorage.setItem('sizeUnit', selectedSizeUnit);
+    refreshCurrentView();
   });
 }
 
-function closeShareModal(e) { if (e.target === $('share-modal')) closeShareModalDirect(); }
-function closeShareModalDirect() { $('share-modal').classList.add('hidden'); }
-
-// ── MOVE ──────────────────────────────────────────────────────────────────────
-async function openMoveModal(fileId, e) {
-  if (e) e.stopPropagation();
-  moveTargetFileId = fileId;
-
-  let folders;
-  if (MOCK_MODE) {
-    folders = MOCK_FOLDERS;
-  } else {
-    try {
-      const res = await apiFetch(`${BASE}/api/folders/root`);
-      const json = await res.json();
-      if (!json.success) return;
-      folders = json.data.folders;
-    } catch { return; }
+function renderGrid(folders, files) {
+  const grid = document.getElementById('file-grid');
+  if (!folders.length && !files.length) {
+    grid.innerHTML = '<div class="empty-state">📭 This folder is empty</div>'; return;
   }
-
-  const sel = $('move-folder-select');
-  sel.innerHTML = `<option value="root">My Drive (root)</option>` +
-    folders.map(f => `<option value="${f.id}">${f.name}</option>`).join('');
-  $('move-modal').classList.remove('hidden');
+  grid.innerHTML = [
+    ...folders.map(f => `
+      <div class="card" ondblclick="navigateTo('${f.id}','${f.name}')">
+        <div class="card-icon">📁</div>
+        <div class="card-name">${f.name}</div>
+        <div class="card-actions">
+          <button class="btn-delete" onclick="event.stopPropagation();alert('Delete files inside first')">🗑</button>
+        </div>
+      </div>`),
+    ...files.map(f => `
+      <div class="card" ondblclick="previewFile('${f.id}','${f.mimeType}','${f.originalName}')">
+        <div class="card-icon">${fileIcon(f.mimeType)}</div>
+        <div class="card-name">${f.originalName}</div>
+        <div class="card-size">${formatSize(f.size)}</div>
+        <div class="card-actions">
+          <button class="btn-download" onclick="event.stopPropagation();downloadFile('${f.id}')">⬇</button>
+          <button class="btn-share" onclick="event.stopPropagation();shareFile('${f.id}')">🔗</button>
+          <button class="btn-move" onclick="event.stopPropagation();moveFile('${f.id}')">↪</button>
+          <button class="btn-delete" onclick="event.stopPropagation();deleteFile('${f.id}')">🗑</button>
+        </div>
+        <div id="share-${f.id}" class="share-url hidden"></div>
+      </div>`)
+  ].join('');
 }
 
-async function confirmMove() {
-  const targetFolderId = $('move-folder-select').value;
+function downloadFile(id) { window.open(`${API}/api/download/${id}`, '_blank'); }
 
-  if (MOCK_MODE) {
-    const file = MOCK_FILES.find(f => f.id === moveTargetFileId);
-    if (file) file.folderId = targetFolderId === 'root' ? null : targetFolderId;
-    closeMoveModalDirect();
-    loadFolder(currentFolderId);
-    return;
-  }
-
-  try {
-    const res = await apiFetch(`${BASE}/api/files/${moveTargetFileId}/move`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ targetFolderId })
-    });
-    const json = await res.json();
-    if (!json.success) throw new Error(json.error);
-    closeMoveModalDirect();
-    loadFolder(currentFolderId);
-  } catch (err) { alert('Error: ' + err.message); }
+async function deleteFile(id) {
+  if (!confirm('Delete this file?')) return;
+  const res = await fetch(`${API}/api/files/${id}`, { method: 'DELETE', credentials: 'include' });
+  const data = await res.json();
+  if (!data.success) { alert(data.error); return; }
+  loadFolder(currentFolderId);
+  loadQuota();
 }
 
-function closeMoveModal(e) { if (e.target === $('move-modal')) closeMoveModalDirect(); }
-function closeMoveModalDirect() { $('move-modal').classList.add('hidden'); moveTargetFileId = null; }
-
-// ── SEARCH ────────────────────────────────────────────────────────────────────
-$('search-input').addEventListener('input', e => {
-  clearTimeout(searchDebounceTimer);
-  const q = e.target.value.trim();
-  $('search-clear').classList.toggle('hidden', !q);
-  if (!q) { clearSearch(); return; }
-  searchDebounceTimer = setTimeout(() => runSearch(q), 300);
-});
-
-async function runSearch(q) {
-  isSearchMode = true;
-  $('search-mode-badge').classList.remove('hidden');
-
-  if (MOCK_MODE) {
-    const results = MOCK_FILES.filter(f => f.originalName.toLowerCase().includes(q.toLowerCase()));
-    currentFiles = results;
-    renderGrid([], results);
-    return;
-  }
-
-  try {
-    const res = await apiFetch(`${BASE}/api/search?q=${encodeURIComponent(q)}&userId=${currentUser.userId}`);
-    const json = await res.json();
-    if (!json.success) return;
-    currentFiles = json.data.files;
-    renderGrid([], json.data.files);
-  } catch { }
+async function shareFile(id) {
+  const res = await fetch(`${API}/api/files/${id}/share`, { method: 'POST', credentials: 'include' });
+  const data = await res.json();
+  if (!data.success) { alert(data.error); return; }
+  const fullUrl = `${window.location.origin}${data.data.shareUrl}`;
+  const el = document.getElementById(`share-${id}`);
+  el.textContent = `📋 ${fullUrl} — click to copy`;
+  el.classList.remove('hidden');
+  el.onclick = () => { navigator.clipboard.writeText(fullUrl); el.textContent = '✅ Copied!'; };
 }
 
-function clearSearch() {
-  $('search-input').value = '';
-  $('search-clear').classList.add('hidden');
-  isSearchMode = false;
-  $('search-mode-badge').classList.add('hidden');
+async function moveFile(id) {
+  const targetId = prompt('Paste target folder ID (blank = move to root):');
+  if (targetId === null) return;
+  const res = await fetch(`${API}/api/files/${id}/move`, {
+    method: 'PATCH', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ targetFolderId: targetId || null })
+  });
+  const data = await res.json();
+  if (!data.success) { alert(data.error); return; }
   loadFolder(currentFolderId);
 }
 
-// ── PREVIEW MODAL ─────────────────────────────────────────────────────────────
-function openPreview(file) {
-  $('modal-title').textContent = file.originalName;
-  const body = $('modal-body');
-  body.innerHTML = '';
-
-  if (file.mimeType && file.mimeType.startsWith('image/')) {
-    const img = document.createElement('img');
-    img.src = `${BASE}/api/download/${file.id}`;
-    img.alt = file.originalName;
-    body.appendChild(img);
-  } else if (file.mimeType && file.mimeType.startsWith('text/')) {
-    const pre = document.createElement('pre');
-    pre.textContent = 'Loading…';
-    body.appendChild(pre);
-    if (!MOCK_MODE) {
-      apiFetch(`${BASE}/api/download/${file.id}`)
-        .then(r => r.text())
-        .then(t => { pre.textContent = t; })
-        .catch(() => { pre.textContent = 'Could not load preview.'; });
-    } else {
-      pre.textContent = '(Mock) Text file content preview.';
-    }
+async function previewFile(id, mime, name) {
+  const modal = document.getElementById('preview-modal');
+  const content = document.getElementById('preview-content');
+  modal.classList.remove('hidden');
+  if (mime && mime.startsWith('image/')) {
+    content.innerHTML = `<h3 style="margin-bottom:12px">${name}</h3><img src="${API}/api/download/${id}" />`;
+  } else if (mime && mime.startsWith('text/')) {
+    const res = await fetch(`${API}/api/download/${id}`, { credentials: 'include' });
+    const text = await res.text();
+    content.innerHTML = `<h3 style="margin-bottom:12px">${name}</h3><pre>${text}</pre>`;
   } else {
-    body.innerHTML = `<div class="preview-icon"><span>${fileIcon(file.mimeType)}</span><p>No preview available</p></div>`;
+    content.innerHTML = `<div style="text-align:center;padding:40px">
+      <div style="font-size:64px">${fileIcon(mime)}</div>
+      <h3 style="margin:16px 0 8px">${name}</h3>
+      <button class="btn-primary" onclick="window.open('${API}/api/download/${id}','_blank')">⬇ Download</button>
+    </div>`;
+  }
+}
+
+function closePreview(e) {
+  if (!e || e.target === document.getElementById('preview-modal') || !e.target) {
+    document.getElementById('preview-modal').classList.add('hidden');
+    document.getElementById('preview-content').innerHTML = '';
+  }
+}
+
+function handleSearch(q) {
+  if (isAdminView) return;
+  clearTimeout(searchTimeout);
+  if (!q.trim()) { loadFolder(currentFolderId); return; }
+  searchTimeout = setTimeout(async () => {
+    const res = await fetch(`${API}/api/search?q=${encodeURIComponent(q)}`, { credentials: 'include' });
+    const data = await res.json();
+    if (!data.success) return;
+    document.getElementById('breadcrumb').textContent = `Search: "${q}"`;
+    renderGrid([], data.data.files);
+  }, 300);
+}
+
+function showDriveView() {
+  if (!isAdminView) return;
+  isAdminView = false;
+  document.getElementById('quota-section').classList.remove('hidden');
+  document.getElementById('toolbar').classList.remove('hidden');
+  document.getElementById('file-grid').classList.remove('hidden');
+  document.getElementById('admin-panel').classList.add('hidden');
+  const searchInput = document.getElementById('search-input');
+  searchInput.disabled = false;
+  searchInput.placeholder = '🔍 Search files...';
+}
+
+async function openAdminPanel() {
+  if (!currentUser || currentUser.role !== 'admin') {
+    alert('Admin access required');
+    return;
   }
 
-  $('modal-download-btn').onclick = () => downloadFile(file.id);
-  $('modal-share-btn').onclick = () => shareFile(file.id);
-  $('modal-delete-btn').onclick = () => deleteFile(file.id);
-  $('modal-overlay').classList.remove('hidden');
+  isAdminView = true;
+  document.getElementById('quota-section').classList.add('hidden');
+  document.getElementById('toolbar').classList.add('hidden');
+  document.getElementById('file-grid').classList.add('hidden');
+  const panel = document.getElementById('admin-panel');
+  panel.classList.remove('hidden');
+  document.getElementById('breadcrumb').textContent = 'Admin Panel';
+  const searchInput = document.getElementById('search-input');
+  searchInput.value = '';
+  searchInput.disabled = true;
+  searchInput.placeholder = 'Admin view active';
+
+  await loadAdminDashboard();
 }
 
-function closeModal(e) { if (e.target === $('modal-overlay')) closeModalDirect(); }
-function closeModalDirect() { $('modal-overlay').classList.add('hidden'); }
+async function loadAdminDashboard() {
+  const panel = document.getElementById('admin-panel');
+  panel.innerHTML = '<div class="admin-loading">Loading admin data...</div>';
 
-function openPreviewAction(fileId, e) {
-  if (e) e.stopPropagation();
+  try {
+    const [statsRes, usersRes, filesRes, analyticsRes, settingsRes] = await Promise.all([
+      fetch(`${API}/api/admin/stats`, { credentials: 'include' }),
+      fetch(`${API}/api/admin/users`, { credentials: 'include' }),
+      fetch(`${API}/api/admin/files`, { credentials: 'include' }),
+      fetch(`${API}/api/admin/analytics`, { credentials: 'include' }),
+      fetch(`${API}/api/admin/settings`, { credentials: 'include' }),
+    ]);
 
-  const file = currentFiles.find((f) => String(f.id) === String(fileId));
-  if (!file) return;
-  openPreview(file);
+    const stats = await statsRes.json();
+    const users = await usersRes.json();
+    const files = await filesRes.json();
+    const analytics = await analyticsRes.json();
+    const settings = await settingsRes.json();
+
+    if (!stats.success || !users.success || !files.success || !analytics.success || !settings.success) {
+      panel.innerHTML = `<div class="admin-error">${stats.error || users.error || files.error || analytics.error || settings.error || 'Failed to load admin data'}</div>`;
+      return;
+    }
+
+    renderAdminPanel(stats.data, users.data.users, files.data.files, analytics.data, settings.data);
+  } catch (e) {
+    panel.innerHTML = '<div class="admin-error">Unable to load admin dashboard</div>';
+  }
 }
+
+function renderAdminPanel(stats, users, files, analytics, settings) {
+  const panel = document.getElementById('admin-panel');
+  const systemUsed = analytics?.systemUsage?.used || 0;
+  const systemLimit = analytics?.systemUsage?.limit || 1;
+  const systemPct = Math.min(100, ((systemUsed / systemLimit) * 100) || 0).toFixed(1);
+
+  const maxMimeBytes = Math.max(1, ...(analytics?.filesByMime || []).map((m) => m.bytes || 0));
+  const maxUserBytes = Math.max(1, ...(analytics?.storageByUser || []).map((u) => u.used || 0));
+  const maxDailyBytes = Math.max(1, ...(analytics?.uploadsByDay || []).map((d) => d.bytes || 0));
+
+  panel.innerHTML = `
+    <div class="admin-stats">
+      <div class="admin-stat-card"><div class="admin-stat-label">Users</div><div class="admin-stat-value">${stats.users}</div></div>
+      <div class="admin-stat-card"><div class="admin-stat-label">Files</div><div class="admin-stat-value">${stats.files}</div></div>
+      <div class="admin-stat-card"><div class="admin-stat-label">Folders</div><div class="admin-stat-value">${stats.folders}</div></div>
+      <div class="admin-stat-card"><div class="admin-stat-label">Storage</div><div class="admin-stat-value">${formatSizeMB(stats.totalStorageUsed || 0)}</div></div>
+    </div>
+
+    <div class="admin-section">
+      <h3>System Quota Settings</h3>
+      <div class="admin-form-row">
+        <input id="system-total-limit" type="number" min="1" step="1" value="${(settings.totalStorageLimit || 0) / 1048576}" placeholder="Total system limit (MB)" />
+        <input id="system-max-user-quota" type="number" min="1" step="1" value="${(settings.maxUserQuota || 0) / 1048576}" placeholder="Max per-user quota (MB)" />
+        <button class="btn-primary" onclick="updateSystemSettings()">Save Settings</button>
+      </div>
+      <div class="admin-helper-text">Current usage: ${formatSizeMB(systemUsed)} / ${formatSizeMB(systemLimit)} (${systemPct}%)</div>
+    </div>
+
+    <div class="admin-charts-grid">
+      <div class="admin-section">
+        <h3>System Usage</h3>
+        <div class="usage-ring" style="--usage:${systemPct}%">
+          <div class="usage-ring-inner">${systemPct}%</div>
+        </div>
+      </div>
+
+      <div class="admin-section">
+        <h3>Storage by File Type</h3>
+        <div class="bar-chart-list">
+          ${(analytics?.filesByMime || []).slice(0, 8).map((item) => `
+            <div class="bar-row">
+              <span>${item.type}</span>
+              <div class="bar-track"><div class="bar-fill" style="width:${((item.bytes / maxMimeBytes) * 100).toFixed(1)}%"></div></div>
+              <span>${formatSizeMB(item.bytes)}</span>
+            </div>
+          `).join('') || '<div class="admin-helper-text">No file type data available</div>'}
+        </div>
+      </div>
+
+      <div class="admin-section">
+        <h3>Top User Storage Usage</h3>
+        <div class="bar-chart-list">
+          ${(analytics?.storageByUser || []).slice(0, 8).map((user) => `
+            <div class="bar-row">
+              <span>${user.username}</span>
+              <div class="bar-track"><div class="bar-fill" style="width:${((user.used / maxUserBytes) * 100).toFixed(1)}%"></div></div>
+              <span>${formatSizeMB(user.used)}</span>
+            </div>
+          `).join('') || '<div class="admin-helper-text">No user usage data available</div>'}
+        </div>
+      </div>
+
+      <div class="admin-section">
+        <h3>Uploads (Last 14 Days)</h3>
+        <div class="bar-chart-list">
+          ${(analytics?.uploadsByDay || []).map((day) => `
+            <div class="bar-row">
+              <span>${day._id}</span>
+              <div class="bar-track"><div class="bar-fill" style="width:${((day.bytes / maxDailyBytes) * 100).toFixed(1)}%"></div></div>
+              <span>${formatSizeMB(day.bytes)}</span>
+            </div>
+          `).join('') || '<div class="admin-helper-text">No recent uploads</div>'}
+        </div>
+      </div>
+    </div>
+
+    <div class="admin-section">
+      <h3>Create User</h3>
+      <div class="admin-form-row">
+        <input id="admin-new-username" type="text" placeholder="Username" />
+        <input id="admin-new-password" type="password" placeholder="Password" />
+        <select id="admin-new-role">
+          <option value="user">User</option>
+          <option value="admin">Admin</option>
+        </select>
+        <input id="admin-new-quota" type="number" min="1" step="1" placeholder="Quota MB (optional)" />
+        <button class="btn-primary" onclick="createAdminUser()">Create</button>
+      </div>
+    </div>
+
+    <div class="admin-section">
+      <h3>Users</h3>
+      <div class="admin-table-wrap">
+        <table class="admin-table">
+          <thead><tr><th>Username</th><th>Role</th><th>Quota Used (MB)</th><th>Quota Limit (MB)</th><th>Actions</th></tr></thead>
+          <tbody>
+            ${users.map((u) => `
+              <tr>
+                <td>${u.username}</td>
+                <td>${u.role || 'user'}</td>
+                <td>${formatSizeMB(u.quotaUsed || 0)}</td>
+                <td>
+                  <div class="quota-editor">
+                    <input id="quota-user-${u._id}" type="number" min="1" step="1" value="${((u.quotaLimit || 0) / 1048576).toFixed(2)}" />
+                    <button class="btn-secondary admin-btn-small" onclick="updateUserQuota('${u._id}')">Save</button>
+                  </div>
+                </td>
+                <td><button class="btn-danger admin-btn-small" onclick="deleteAdminUser('${u._id}', '${u.username}')">Delete</button></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="admin-section">
+      <h3>All Files</h3>
+      <div class="admin-table-wrap">
+        <table class="admin-table">
+          <thead><tr><th>Name</th><th>Owner</th><th>Type</th><th>Size (MB)</th><th>Actions</th></tr></thead>
+          <tbody>
+            ${files.map((f) => `
+              <tr>
+                <td>${f.originalName}</td>
+                <td>${f.owner?.username || 'Unknown'}</td>
+                <td>${f.mimeType || '-'}</td>
+                <td>${formatSizeMB(f.size || 0)}</td>
+                <td>
+                  <button class="btn-secondary admin-btn-small" onclick="window.open('${API}/api/download/${f.id}', '_blank')">Download</button>
+                  <button class="btn-danger admin-btn-small" onclick="deleteAdminFile('${f.id}', '${f.originalName.replace(/'/g, "\\'")}')">Delete</button>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+async function createAdminUser() {
+  const username = document.getElementById('admin-new-username').value.trim();
+  const password = document.getElementById('admin-new-password').value.trim();
+  const role = document.getElementById('admin-new-role').value;
+  const quotaRaw = document.getElementById('admin-new-quota').value.trim();
+  const quotaLimit = quotaRaw ? Number(quotaRaw) * 1048576 : undefined;
+
+  if (!username || !password) {
+    alert('Username and password are required');
+    return;
+  }
+
+  const res = await fetch(`${API}/api/admin/users`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password, role, quotaLimit }),
+  });
+
+  const data = await res.json();
+  if (!data.success) {
+    alert(data.error || 'Failed to create user');
+    return;
+  }
+
+  document.getElementById('admin-new-username').value = '';
+  document.getElementById('admin-new-password').value = '';
+  document.getElementById('admin-new-quota').value = '';
+  await loadAdminDashboard();
+}
+
+async function updateUserQuota(userId) {
+  const input = document.getElementById(`quota-user-${userId}`);
+  const quotaLimit = Number(input?.value) * 1048576;
+
+  if (!Number.isFinite(quotaLimit) || quotaLimit <= 0) {
+    alert('Quota must be a positive number');
+    return;
+  }
+
+  const res = await fetch(`${API}/api/admin/users/${userId}/quota`, {
+    method: 'PATCH',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ quotaLimit }),
+  });
+  const data = await res.json();
+  if (!data.success) {
+    alert(data.error || 'Failed to update quota');
+    return;
+  }
+
+  await loadAdminDashboard();
+}
+
+async function updateSystemSettings() {
+  const totalStorageLimit = Number(document.getElementById('system-total-limit').value) * 1048576;
+  const maxUserQuota = Number(document.getElementById('system-max-user-quota').value) * 1048576;
+
+  if (!Number.isFinite(totalStorageLimit) || totalStorageLimit <= 0) {
+    alert('Total storage limit must be a positive number');
+    return;
+  }
+
+  if (!Number.isFinite(maxUserQuota) || maxUserQuota <= 0) {
+    alert('Max user quota must be a positive number');
+    return;
+  }
+
+  const res = await fetch(`${API}/api/admin/settings`, {
+    method: 'PATCH',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ totalStorageLimit, maxUserQuota }),
+  });
+  const data = await res.json();
+  if (!data.success) {
+    alert(data.error || 'Failed to update settings');
+    return;
+  }
+
+  await loadAdminDashboard();
+}
+
+async function deleteAdminUser(userId, username) {
+  if (!confirm(`Delete user "${username}" and all their data?`)) return;
+
+  const res = await fetch(`${API}/api/admin/users/${userId}`, {
+    method: 'DELETE',
+    credentials: 'include',
+  });
+  const data = await res.json();
+  if (!data.success) {
+    alert(data.error || 'Failed to delete user');
+    return;
+  }
+
+  await loadAdminDashboard();
+}
+
+async function deleteAdminFile(fileId, fileName) {
+  if (!confirm(`Delete file "${fileName}"?`)) return;
+
+  const res = await fetch(`${API}/api/admin/files/${fileId}`, {
+    method: 'DELETE',
+    credentials: 'include',
+  });
+  const data = await res.json();
+  if (!data.success) {
+    alert(data.error || 'Failed to delete file');
+    return;
+  }
+
+  await loadAdminDashboard();
+}
+
+function setupDragAndDropUpload() {
+  const dropArea = document.querySelector('.main');
+  const grid = document.getElementById('file-grid');
+  if (!dropArea || !grid) return;
+
+  const setDragActive = (isActive) => {
+    grid.classList.toggle('drag-active', isActive);
+  };
+
+  ['dragenter', 'dragover'].forEach((eventName) => {
+    dropArea.addEventListener(eventName, (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setDragActive(true);
+    });
+  });
+
+  ['dragleave', 'dragend'].forEach((eventName) => {
+    dropArea.addEventListener(eventName, (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!dropArea.contains(e.relatedTarget)) {
+        setDragActive(false);
+      }
+    });
+  });
+
+  dropArea.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive(false);
+
+    const files = Array.from(e.dataTransfer?.files || []);
+    for (const file of files) {
+      await uploadFile(file);
+    }
+  });
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closePreview();
+  if (e.key === 'Enter' && !document.getElementById('login-screen').classList.contains('hidden')) login();
+});
+
+setupDragAndDropUpload();
+setupSizeUnitSelector();

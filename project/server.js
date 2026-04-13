@@ -1,9 +1,3 @@
-// Express server for file storage hackathon
-// Port: 3000
-// Middleware: cors, express.json, express.urlencoded
-// Routes: /api mounted from routes/files.js
-// MongoDB: connect via mongoose to mongodb://localhost:27017/filestorage
-// Multer: configured in routes/files.js, not here
 
 const express = require('express');
 const cors = require('cors');
@@ -18,8 +12,6 @@ const app = express();
 const PORT = 3000;
 const MONGO_URI = process.env.MONGO_URI;
 
-// Middleware
-// Required for M4 frontend on different port
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -35,28 +27,17 @@ app.get('/share/:token', (req, res) => {
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Routes
 const fileRoutes = require('./routes/files');
 const foldersRoutes = require('./routes/folders');
 const shareRoutes = require('./routes/share');
 const quotaRoutes = require('./routes/quota');
 const searchRoutes = require('./routes/search');
-
-const users = [
-    { username: 'alice', password: 'pass1' },
-    { username: 'bob', password: 'pass2' },
-];
+const adminRoutes = require('./routes/admin');
 
 app.post('/api/login', async (req, res) => {
     try {
         const { username, password } = req.body;
-        const user = users.find((u) => u.username === username && u.password === password);
-
-        if (!user) {
-            return res.json({ success: false, error: 'Invalid credentials' });
-        }
-
-        const dbUser = await User.findOne({ username: user.username });
+        const dbUser = await User.findOne({ username, password });
         if (!dbUser) {
             return res.json({ success: false, error: 'Invalid credentials' });
         }
@@ -67,6 +48,7 @@ app.post('/api/login', async (req, res) => {
             data: {
                 userId: dbUser._id,
                 username: dbUser.username,
+                role: dbUser.role,
             },
         });
     } catch (err) {
@@ -80,13 +62,13 @@ app.post('/api/logout', (req, res) => {
     });
 });
 
-app.use('/api', shareRoutes);
-app.use('/api', fileRoutes);
-app.use('/api/folders', foldersRoutes);
-app.use('/api', quotaRoutes);
-app.use('/api', searchRoutes);
+app.use('/api', require('./routes/files'));
+app.use('/api/folders', require('./routes/folders'));
+app.use('/api', require('./routes/share'));
+app.use('/api', require('./routes/quota'));
+app.use('/api', require('./routes/search'));
+app.use('/api/admin', adminRoutes);
 
-// Connect to MongoDB
 mongoose.connect(MONGO_URI)
 .then(() => {
     console.log('Connected to MongoDB');

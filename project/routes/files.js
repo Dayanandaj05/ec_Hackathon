@@ -11,6 +11,7 @@ const {
 const {
     mapFile,
     createFileRecord,
+    hasDuplicateFileName,
     getOwnedFile,
     deleteOwnedFile,
     moveOwnedFile,
@@ -21,11 +22,12 @@ const {
     addUsage,
     subtractUsage,
 } = require('../services/quotaManager');
+const User = require('../models/User');
+const recalculateQuota = require('../helpers/quota');
 
 const router = express.Router();
 router.use(authMiddleware);
 
-// POST /api/upload
 router.post(
     '/upload',
     uploadSingleFile,
@@ -46,6 +48,16 @@ router.post(
             ensureFileWithinLimit(req.file.size);
             await ensureUserHasQuota(userId, req.file.size);
 
+            const duplicateExists = await hasDuplicateFileName(
+                userId,
+                folderId || null,
+                req.file.originalname
+            );
+
+            if (duplicateExists) {
+                throw new Error('A file with the same name already exists in this folder.');
+            }
+
             const saved = await createFileRecord({
                 originalName: req.file.originalname,
                 storedName: req.file.filename,
@@ -58,6 +70,7 @@ router.post(
             });
 
             await addUsage(userId, req.file.size);
+            await User.findByIdAndUpdate(userId, { $inc: { quotaUsed: req.file.size } });
 
             return res.json({
                 success: true,
@@ -72,7 +85,6 @@ router.post(
     }
 );
 
-// GET /api/download/:fileId
 router.get('/download/:fileId', async (req, res) => {
     try {
         const fileId = req.params.fileId;
@@ -89,7 +101,6 @@ router.get('/download/:fileId', async (req, res) => {
     }
 });
 
-// DELETE /api/files/:fileId
 router.delete('/files/:fileId', async (req, res) => {
     try {
         const fileId = req.params.fileId;
@@ -101,6 +112,7 @@ router.delete('/files/:fileId', async (req, res) => {
         }
 
         await deleteOwnedFile(ownerId, fileId);
+        await recalculateQuota(file.owner);
         await removeFileFromDisk(file.path);
         await subtractUsage(ownerId, file.size);
 
@@ -110,7 +122,6 @@ router.delete('/files/:fileId', async (req, res) => {
     }
 });
 
-// PATCH /api/files/:fileId/move
 router.patch('/files/:fileId/move', async (req, res) => {
     try {
         const fileId = req.params.fileId;
@@ -134,7 +145,6 @@ router.patch('/files/:fileId/move', async (req, res) => {
     }
 });
 
-// Error handling middleware for Multer errors
 router.use((err, req, res, next) => {
     if (err instanceof multer.MulterError) {
         if (err.code === 'LIMIT_FILE_SIZE') {
@@ -148,5 +158,5 @@ router.use((err, req, res, next) => {
     next();
 });
 
-module.exports = router;    
+module.exports = router;
 

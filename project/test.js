@@ -18,7 +18,6 @@ async function runTests() {
     body: JSON.stringify({ username: 'alice', password: 'pass1' })
   });
 
-  // Grab the session cookie from the login response
   sessionCookie = loginRes.headers.get('set-cookie');
   console.log('Session cookie captured:', sessionCookie ? 'YES' : 'NO');
 

@@ -9,7 +9,6 @@ const {
 
 const router = express.Router();
 
-// POST /api/files/:fileId/share — protected
 router.post('/files/:fileId/share', auth, async (req, res) => {
     const { fileId } = req.params;
     try {
@@ -23,7 +22,6 @@ router.post('/files/:fileId/share', auth, async (req, res) => {
     }
 });
 
-// GET /api/share/:token — public metadata for share page
 router.get('/share/:token', async (req, res) => {
     const { token } = req.params;
     try {
@@ -37,7 +35,6 @@ router.get('/share/:token', async (req, res) => {
     }
 });
 
-// GET /api/share/:token/download — public download endpoint
 router.get('/share/:token/download', async (req, res) => {
     const { token } = req.params;
     try {

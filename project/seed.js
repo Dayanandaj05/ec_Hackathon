@@ -7,14 +7,15 @@ async function seed() {
 	await mongoose.connect(process.env.MONGO_URI);
 	console.log('Connected');
 
-	await User.deleteMany({ username: { $in: ['alice', 'bob'] } });
+	await User.deleteMany({ username: { $in: ['alice', 'bob', 'admin'] } });
 
 	await User.insertMany([
-		{ username: 'alice', password: 'pass1', quotaLimit: 524288000 },
-		{ username: 'bob', password: 'pass2', quotaLimit: 524288000 },
+		{ username: 'alice', password: 'pass1', role: 'user', quotaLimit: 524288000 },
+		{ username: 'bob', password: 'pass2', role: 'user', quotaLimit: 524288000 },
+		{ username: 'admin', password: 'admin123', role: 'admin', quotaLimit: 524288000 },
 	]);
 
-	console.log('Seeded alice and bob');
+	console.log('Seeded alice, bob, and admin');
 	await mongoose.disconnect();
 }
 
